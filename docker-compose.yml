@@ -1,0 +1,155 @@
+services:
+  # ================= APPLICATION SERVICES =================
+  api-gateway:
+    build: ./api-gateway
+    container_name: api-gateway
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - USER_SERVICE_URL=user:50051
+      - BLOG_SERVICE_URL=blog-system:50052
+      - KAFKA_BROKER=kafka:29092
+    depends_on:
+      user:
+        condition: service_started
+      blog-system:
+        condition: service_started
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - app-net
+
+  user:
+    build: ./user
+    container_name: user-service
+    environment:
+      - NODE_ENV=production
+      - GRPC_URL=0.0.0.0:50051
+      - DATABASE_URL=postgresql://postgres:postgres@postgres-user:5432/user_db?schema=public
+      - KAFKA_BROKER=kafka:29092
+    depends_on:
+      postgres-user:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - app-net
+
+  blog-system:
+    build: ./blog-system
+    container_name: blog-system-service
+    environment:
+      - NODE_ENV=production
+      - GRPC_URL=0.0.0.0:50052
+      - DATABASE_URL=postgresql://postgres:postgres@postgres-blog:5432/blog_db?schema=public
+      - KAFKA_BROKER=kafka:29092
+    depends_on:
+      postgres-blog:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - app-net
+
+  # ================= DATABASES =================
+  postgres-user:
+    image: postgres:16-alpine
+    container_name: postgres-user
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: user_db
+    ports:
+      - "5433:5432"   # host theke connect korar jonne (optional)
+    volumes:
+      - user-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d user_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    networks:
+      - app-net
+
+  postgres-blog:
+    image: postgres:16-alpine
+    container_name: postgres-blog
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: blog_db
+    ports:
+      - "5434:5432"   # host theke connect korar jonne (optional)
+    volumes:
+      - blog-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d blog_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    networks:
+      - app-net
+
+  # ================= KAFKA (KRaft, Zookeeper lagbe na) =================
+  kafka:
+    image: apache/kafka:3.8.0
+    container_name: kafka
+    ports:
+      - "9092:9092"   # host (localhost) theke
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: INTERNAL://:29092,EXTERNAL://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+    networks:
+      - app-net
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - app-net
+
+volumes:
+  user-db-data:
+  blog-db-data:
+  kafka-data:
+
+networks:
+  app-net:
+    driver: bridge
